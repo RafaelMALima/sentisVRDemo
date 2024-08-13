@@ -28,7 +28,6 @@ public class getImage : MonoBehaviour
             renderTexture = new RenderTexture(Screen.width, Screen.height, 24);
         }
 
-
     }
 
     void Update()
@@ -50,11 +49,8 @@ public class getImage : MonoBehaviour
         _mCamera.targetTexture = null;
 
         Texture2D input = resizer.ResizeImage(texture2D, 244, 244);
-        Debug.Log(input.width + " " + input.height);
         saveToAssets(input);
         return RunInference(input);
-
- 
     }
 
 
