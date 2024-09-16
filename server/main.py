@@ -1,76 +1,93 @@
 from fastapi import FastAPI, WebSocket
-from fastapi.responses import StreamingResponse
 import uvicorn
 from PIL import Image
 import numpy as np
 import cv2
 import io
+from ultralytics import YOLO
+import json
+import base64
+
+from image_processing import process_image, calculate_background_colors
 
 app = FastAPI()
-
-# Global variable to store the latest frame received from WebSocket
-current_frame = None
+model = YOLO("yolov8n.pt")
 
 @app.websocket("/")
 async def websocket_endpoint(websocket: WebSocket):
-    global current_frame
     print("WebSocket connection starting...")
     await websocket.accept()
 
     try:
         while True:
-            # Receive a message
-            message = await websocket.receive()
-            #print(f"Received message: {message}")
-            data = message.get("bytes")
+            json_message = await websocket.receive_text()
+            data = json.loads(json_message)
 
-            if data:
-                # Decode the PNG data to an image using Pillow (PIL)
-                image = Image.open(io.BytesIO(data))
-                image_np = np.array(image)  # Convert PIL image to NumPy array
+            image_type = data.get('type')
+            image_data_base64 = data.get('imageData')
+            position = data.get('position')
+            rotation = data.get('rotation')
 
-                # Store the latest frame in the global variable
+            image_data_bytes = base64.b64decode(image_data_base64)
+            image = Image.open(io.BytesIO(image_data_bytes))
+            image_np = np.array(image)
+
+            if image_type == "color":
                 current_frame = cv2.cvtColor(image_np, cv2.COLOR_RGB2BGR)
 
-                # Display the image using OpenCV (optional for local viewing)
-                cv2.imshow("Live Stream", current_frame)
+                # Calculate GUI colors
+                gui_back_color, gui_text_color = calculate_background_colors(current_frame)
 
-                # Use a small delay to allow the OpenCV window to refresh
-                if cv2.waitKey(1) & 0xFF == ord('q'):
-                    break  # Optional: break loop on 'q' key press to close the window
+                # Initialize object_position as None
+                object_position_data = None
 
-    except KeyError as e:
-        print(f"Error receiving message: {e}")
+                # Object detection
+                results = model(current_frame, verbose=False)
+                for detection in results:
+                    if detection is not None:
+                        detection_json = detection.tojson()
+                        result_json = json.loads(detection_json)
+                        if result_json:
+                            object_position = process_image(current_frame, result_json, rotation, position)
+                            object_position_data = {
+                                "x": object_position['x'],
+                                "y": object_position['y'],
+                                "z": object_position['z']
+                            }
+                            break  # Process only the first detected object
+
+                # Prepare the combined JSON message
+                frame_data_message = {
+                    "type": "frame_data",
+                    "gui_colors": {
+                        "background_color": {
+                            "r": gui_back_color[0],
+                            "g": gui_back_color[1],
+                            "b": gui_back_color[2]
+                        },
+                        "text_color": {
+                            "r": gui_text_color[0],
+                            "g": gui_text_color[1],
+                            "b": gui_text_color[2]
+                        }
+                    },
+                    "object_position": object_position_data  # None if no object detected
+                }
+
+                await websocket.send_text(json.dumps(frame_data_message))
+
+                cv2.imshow("Color Image", current_frame)
+                cv2.waitKey(1)
+
+            elif image_type == "depth":
+                current_depth_frame = image_np
+                cv2.imshow("Depth Image", current_depth_frame)
+                cv2.waitKey(1)
+
     except Exception as e:
-        print(f"Unexpected error: {e}")
+        print(f"Error: {e}")
     finally:
         cv2.destroyAllWindows()
-
-
-@app.get("/video_feed")
-async def video_feed():
-    """
-    HTTP endpoint to stream the video frames as MJPEG.
-    """
-    global current_frame
-
-    async def frame_generator():
-        while True:
-            if current_frame is not None:
-                # Encode the current frame as JPEG
-                ret, jpeg = cv2.imencode('.jpg', current_frame)
-                if not ret:
-                    continue
-
-                # Convert to bytes
-                frame_bytes = jpeg.tobytes()
-
-                # Yield MJPEG stream format with boundary
-                yield (b'--frame\r\n'
-                       b'Content-Type: image/jpeg\r\n\r\n' + frame_bytes + b'\r\n\r\n')
-
-    return StreamingResponse(frame_generator(), media_type="multipart/x-mixed-replace; boundary=frame")
-
 
 if __name__ == "__main__":
     port = 8000

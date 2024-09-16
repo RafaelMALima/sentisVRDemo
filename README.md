@@ -1,4 +1,3 @@
-### LEMBRAR DE 
-```
-git submodule update --init --recursive
-```
+
+#### CLIENT:
+Cena utilizada chama-se clientScene
